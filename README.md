@@ -123,8 +123,7 @@ scripts/
 ├── omarchy-theme-wpanfilli-render          (extra) tema do Omarchy recolorido pelo wallpaper
 └── omarchy-wpanfilli-gtk-sync              (extra) aplica esse tema no GTK/Nautilus
 docs/
-├── 01 … 07                                 um doc por problema técnico (ver tabela acima)
-└── 08-visao-negocio-e-estrategia.md        visão e roadmap para virar um projeto adotável
+└── 01 … 07                                 um doc por problema técnico (ver tabela acima)
 ```
 
 Os dois scripts marcados como *(extra)* são opcionais: geram um tema do Omarchy cuja interface (bordas, barra, ícones) também segue o wallpaper, deixando tela e LEDs coerentes.
@@ -221,12 +220,12 @@ Para calibrar o balanço de branco, aplique um tema/wallpaper cinza e ajuste `OP
 ## Limitações conhecidas
 
 - Teclado AULA F75: só **cor sólida**. RGB por tecla depende de um mapa de LEDs que, na MR atual, só existe para o F99 (issue upstream [#4232](https://gitlab.com/CalcProgrammer1/OpenRGB/-/issues/4232)).
-- O mapa de dispositivos está no código (Python + bash). Externalizar para um arquivo de config com um comando `calibrate` é o próximo passo — ver o [roadmap](docs/08-visao-negocio-e-estrategia.md).
+- O mapa de dispositivos está no código (Python + bash). Externalizar para um arquivo de config com um comando `calibrate` é o próximo passo — ver o roadmap abaixo.
 - Testado apenas em uma máquina (Arch + Omarchy/Hyprland).
 
 ## Roadmap
 
-Resumo de [docs/08](docs/08-visao-negocio-e-estrategia.md):
+Próximos passos planejados:
 1. Funcionar com OpenRGB **oficial** por padrão (build do AULA como receita opcional).
 2. Mapa de dispositivos em **TOML** + comando `calibrate`.
 3. Provedores de cor plugáveis (Omarchy, pywal, wallust, GTK/KDE, hex fixo).
