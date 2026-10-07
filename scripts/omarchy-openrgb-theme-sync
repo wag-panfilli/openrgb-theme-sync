@@ -1,0 +1,234 @@
+#!/bin/bash
+# Syncs OpenRGB-controlled devices (GPU, RAM, motherboard, mouse, keyboard) to
+# a single predominant color: by default (OPENRGB_COLOR_SOURCE=wallpaper in
+# led.conf) the dominant vivid color of the current wallpaper, else the
+# current Omarchy theme's accent. Also run by omarchy-openrgb-wallpaper-watch
+# (systemd user service) whenever only the background changes. (Previously split accent/secondary across devices, but aged LEDs on
+# this rig render hues inconsistently enough that one color reads better.)
+#
+# Requires the persistent OpenRGB SDK server (started via
+# ~/.config/hypr/autostart.lua with --server) to already be running, so this
+# always applies colors through --client instead of opening a second
+# competing connection to the hardware. Waits for the server's port below
+# since this also runs from the post-boot hook, moments after Hyprland starts
+# the server -- it may not have finished detecting hardware yet.
+#
+# Devices are looked up by NAME from `--list-devices`, not by fixed index:
+# swapping hardware (2026-10-03 fan/hub change) reordered the indices
+# (motherboard moved 6 -> 4, keyboard 4 -> 6), so hardcoded numbers rot.
+#   ENE DRAM (x2)                 -> mode direct
+#   Gigabyte ... RTX 3070 (x2)    -> forced OFF (direct, 000000) on every run,
+#         never the theme color: its LEDs are burned out (2026-10-03). The GPU
+#         has no "Off" mode, so black in direct mode is how it's turned off.
+#         One of the two entries is a ghost duplicate (2nd i2c adapter) --
+#         both get black, harmless.
+#   Sinowealth Wireless Keyboard  -> mode direct (AULA F75 dongle)
+#   Redragon M711 Cobra           -> mode static (no "direct" mode)
+#   B550 AORUS PRO motherboard    -> mode direct. Zones: 0=12V RGB Strips,
+#         1=D_LED1 Bottom, 2=D_LED2 Top, 3=Motherboard. Zones 1/2 are ARGB
+#         headers feeding the fan hub; OpenRGB defaults them to 1 LED, so only
+#         the first LED of the chain got colored. They are resized to
+#         ARGB_ZONE_SIZE on every run (the server forgets sizes on restart).
+# The theme color is LED-corrected by the picker (gamma + white balance +
+# normalize), tunable in ~/.config/omarchy-openrgb/led.conf.
+set -euo pipefail
+
+COLORS_FILE="$HOME/.local/state/omarchy/current/theme/colors.toml"
+OPENRGB="$HOME/.local/bin/openrgb-mr3027"
+PICKER="$HOME/.local/bin/omarchy-openrgb-pick-colors.py"
+LOG="$HOME/.local/state/omarchy-openrgb-theme-sync.log"
+LOCK="${XDG_RUNTIME_DIR:-/tmp}/omarchy-openrgb-theme-sync.lock"
+# Optional LED color-correction tunables (OPENRGB_LED_CORRECTION,
+# OPENRGB_LED_GAMMA, OPENRGB_LED_WHITE_BALANCE -- see the picker's header).
+# Hooks don't inherit the user's shell env, so they live in a file.
+LED_CONF="$HOME/.config/omarchy-openrgb/led.conf"
+# Always connect to 127.0.0.1 explicitly. A bare --client goes to "localhost",
+# which resolves to ::1 first, but the server only listens on 0.0.0.0 -- so
+# every call failed once and NetworkClient waited 1s before retrying
+# (~1.7s/call vs ~0.7s/call). This was the "Connection attempt failed" in
+# the log, and the bulk of the delay after a wallpaper change.
+CLIENT=(--client 127.0.0.1:6742 --nodetect)
+# Device listing cached per server instance (pid + start time), so a warm run
+# only needs ONE client connection instead of two. A server restart (reboot,
+# crash) changes the key and forces a fresh listing + readiness wait.
+CACHE_DIR="${XDG_RUNTIME_DIR:-/tmp}/omarchy-openrgb"
+# Direct SDK applier (openrgb-python in its own venv). The CLI code below is
+# only the fallback -- keep its device map in sync with the applier's.
+SDK_PYTHON="$HOME/.local/share/omarchy-openrgb/venv/bin/python"
+SDK_APPLY="$HOME/.local/bin/omarchy-openrgb-apply.py"
+
+{
+    # Serialize runs. omarchy-theme-set releases its own lock before calling
+    # hooks, so two quick theme switches can run this concurrently; whichever
+    # finished last won, sometimes leaving the PREVIOUS theme's color on the
+    # LEDs. Holding a lock and reading colors.toml only after acquiring it
+    # means the last run always applies the current theme.
+    exec 9>"$LOCK"
+    flock -w 60 9 || { echo "=== $(date -Is) === another sync stuck >60s, giving up"; exit 1; }
+
+    echo "=== $(date -Is) === theme: $(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || echo '?')"
+
+    if [[ ! -f "$COLORS_FILE" ]]; then
+        echo "colors.toml not found at $COLORS_FILE, skipping"
+        exit 0
+    fi
+
+    if [[ -f "$LED_CONF" ]]; then
+        set -a
+        # shellcheck source=/dev/null
+        source "$LED_CONF"
+        set +a
+    fi
+
+    # timeout: a hung picker must never keep holding the sync lock.
+    eval "$(timeout 20 python3 "$PICKER" "$COLORS_FILE")"
+
+    if [[ -z "${PRIMARY:-}" ]]; then
+        echo "Failed to determine PRIMARY color, skipping"
+        exit 1
+    fi
+
+    echo "color #$THEME_COLOR ($THEME_SOURCE) -> LED-corrected PRIMARY=$PRIMARY"
+
+    # Identifies the running server instance: pid + kernel start time, so a
+    # recycled pid can't match a stale cache.
+    server_key() {
+        local pid
+        pid=$(pgrep -o -f 'openrgb.* --server' || true)
+        [[ -n $pid ]] || return 0
+        echo "$pid-$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)"
+    }
+
+    # Fresh listing: waits for the server and for full hardware detection,
+    # then caches the result for this server instance.
+    wait_and_list() {
+        # Wait for the SDK server's port to accept connections (up to 20s), so
+        # this doesn't silently no-op when run moments after boot before OpenRGB
+        # has finished starting up and detecting hardware.
+        server_up=false
+        for _ in $(seq 1 40); do
+            if (exec 3<>"/dev/tcp/127.0.0.1/6742") 2>/dev/null; then
+                exec 3>&- 3<&-
+                server_up=true
+                break
+            fi
+            sleep 0.5
+        done
+
+        if [[ "$server_up" != "true" ]]; then
+            echo "OpenRGB SDK server not reachable on 127.0.0.1:6742 after 20s, giving up"
+            return 1
+        fi
+
+        # Port being open only means the server process is alive -- it does NOT
+        # mean it has finished detecting hardware yet. On a real reboot this was
+        # observed to matter: post-boot fired ~23s in, the port was already open,
+        # but the server had only enumerated 2 of 7 controllers (RAM), so the
+        # --device 6 (motherboard) reference below resolved to nothing and
+        # aborted the whole command with "Empty device ID" before any color was
+        # applied. So also wait for the full controller count.
+        EXPECTED_DEVICES=7
+        devices_ready=false
+        for _ in $(seq 1 40); do
+            listing=$("$OPENRGB" "${CLIENT[@]}" --list-devices 2>/dev/null || true)
+            count=$(grep -cE "^[0-9]+:" <<<"$listing" || true)
+            if [[ "$count" -ge "$EXPECTED_DEVICES" ]]; then
+                devices_ready=true
+                break
+            fi
+            sleep 0.5
+        done
+
+        if [[ "$devices_ready" != "true" ]]; then
+            echo "Only $count/$EXPECTED_DEVICES controllers detected after 20s, giving up"
+            return 1
+        fi
+
+        rm -f "$CACHE_DIR"/devices-*
+        key=$(server_key)
+        [[ -n $key ]] && printf '%s\n' "$listing" >"$CACHE_DIR/devices-$key"
+        return 0
+    }
+
+    mkdir -p "$CACHE_DIR"
+    key=$(server_key)
+
+    # A theme switch also repoints the wallpaper symlink, so the theme-set
+    # hook and the wallpaper watcher both fire for it. Skip the second run
+    # when it would send the exact same color to the same server moments
+    # later (a manual run after 15s always re-applies, e.g. for the mouse).
+    LAST="$CACHE_DIR/last-applied"
+    now=$(date +%s)
+    if [[ -f $LAST ]]; then
+        read -r last_key last_color last_time <"$LAST" || true
+        if [[ ${last_key:-} == "$key" && ${last_color:-} == "$PRIMARY" ]] \
+            && (( now - ${last_time:-0} < 15 )); then
+            echo "Same color applied ${last_time:+$((now - last_time))s ago}, skipping."
+            exit 0
+        fi
+    fi
+
+    # Fast path: talk the SDK protocol directly (~50ms total, see the header
+    # of omarchy-openrgb-apply.py). It waits for the server and devices
+    # itself. Any failure -- missing venv (e.g. after a Python upgrade),
+    # protocol error -- falls through to the CLI path below.
+    if [[ -x $SDK_PYTHON ]] && "$SDK_PYTHON" "$SDK_APPLY" "$PRIMARY"; then
+        echo "$(server_key) $PRIMARY $(date +%s)" >"$LAST"
+        echo "Done."
+        exit 0
+    fi
+    echo "SDK apply unavailable/failed, falling back to the openrgb CLI"
+
+    cached=false
+    if [[ -n $key && -s "$CACHE_DIR/devices-$key" ]]; then
+        listing=$(<"$CACHE_DIR/devices-$key")
+        cached=true
+    else
+        wait_and_list || exit 1
+    fi
+
+    # Generous upper bound for the ARGB fan hub chain. Extra "virtual" LEDs
+    # past the physical end are harmless for a single solid color.
+    ARGB_ZONE_SIZE=120
+
+    build_args() {
+    args=()
+    while IFS= read -r line; do
+        [[ "$line" =~ ^([0-9]+):\ (.*)$ ]] || continue
+        idx="${BASH_REMATCH[1]}" name="${BASH_REMATCH[2]}"
+        case "$name" in
+            *"RTX 3070"*)
+                args+=(--device "$idx" --mode direct --color 000000) ;;
+            "ENE DRAM"|"Sinowealth Wireless Keyboard")
+                args+=(--device "$idx" --mode direct --color "$PRIMARY") ;;
+            "Redragon M711 Cobra")
+                args+=(--device "$idx" --mode static --color "$PRIMARY") ;;
+            "B550 AORUS PRO")
+                args+=(--device "$idx" --mode direct --color "$PRIMARY"
+                       --device "$idx" --zone 1 --size "$ARGB_ZONE_SIZE" --mode direct --color "$PRIMARY"
+                       --device "$idx" --zone 2 --size "$ARGB_ZONE_SIZE" --mode direct --color "$PRIMARY") ;;
+            *)
+                echo "Unknown device '$name' (index $idx), leaving it alone" ;;
+        esac
+    done <<<"$listing"
+    }
+
+    # One connection, all devices chained in a single call: each new client
+    # process pays a ~1-2s reconnect penalty (NetworkClient.cpp retries once a
+    # second on a failed first attempt), so spawning one process per device
+    # made this take ~15-18s. A single combined call takes ~0.7s with the
+    # explicit 127.0.0.1 address (see CLIENT above).
+    build_args
+    if ! "$OPENRGB" "${CLIENT[@]}" "${args[@]}"; then
+        # Cached indices can be stale if the server restarted with the same
+        # key or hardware changed; relist once and retry.
+        [[ $cached == true ]] || exit 1
+        echo "Apply with cached device list failed, relisting"
+        wait_and_list || exit 1
+        build_args
+        "$OPENRGB" "${CLIENT[@]}" "${args[@]}"
+    fi
+
+    echo "$(server_key) $PRIMARY $(date +%s)" >"$LAST"
+    echo "Done via CLI. (cached device list: $cached)"
+} >> "$LOG" 2>&1

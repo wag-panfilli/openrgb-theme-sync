@@ -1,0 +1,4 @@
+# AULA F99/F75 wireless keyboard dongle (Sinowealth) - grants user access for OpenRGB.
+# Not yet in upstream openrgb's udev rules (pending MR !3027). Must load before
+# /usr/lib/udev/rules.d/73-seat-late.rules (priority 73) for the uaccess builtin to apply.
+SUBSYSTEMS=="usb|hidraw", ATTRS{idVendor}=="3554", ATTRS{idProduct}=="fa09", TAG+="uaccess", TAG+="AULA_F99_F75"

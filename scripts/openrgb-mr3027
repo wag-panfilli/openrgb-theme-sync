@@ -1,0 +1,2 @@
+#!/bin/sh
+exec env LD_LIBRARY_PATH=/usr/lib/mbedtls3 "$HOME/.local/share/openrgb-aula-build/openrgb" "$@"

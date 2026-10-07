@@ -1,0 +1,6 @@
+-- Add this line to ~/.config/hypr/autostart.lua on the target machine.
+-- (Hyprland/Omarchy does NOT read ~/.config/autostart/*.desktop -- there is
+-- no XDG autostart daemon running. This lua file, loaded at Hyprland startup
+-- via hl.on("hyprland.start", ...), is the only autostart path that fires.)
+
+o.launch_on_start("openrgb-mr3027 --startminimized --server --server-host ::")

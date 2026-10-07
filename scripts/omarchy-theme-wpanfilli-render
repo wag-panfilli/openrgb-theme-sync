@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""
+Renders the "wpanfilli" Omarchy theme: Coppernight recolored from the
+current wallpaper with a primary, secondary and tertiary color.
+
+Coppernight is hand-written: its colors are hardcoded across ~40 files
+(shell.toml, gtk.css, btop, hyprland.lua, terminals, vscode, zed, ...), not
+generated from colors.toml. So a pristine copy lives in TEMPLATE and every
+render copies it into the theme dir with colors substituted by role:
+
+  primary    <- #fab387 (accent: bar text, active border, highlights)
+  secondary  <- #c6a0f6 (inactive window border, secondary highlights)
+  tertiary   <- #ed8796 only where it's the cursor, and the second stop of
+                the active-border gradient (primary -> tertiary)
+  neutrals   <- Coppernight's blue-gray backgrounds / surfaces / text
+                (#11111b, #181825, #313244, #cad3f5, ...) re-hued to the
+                primary's hue, keeping each one's lightness, so window
+                backgrounds and text get the wallpaper's tint without
+                changing contrast.
+  browser    <- chromium.theme ("r,g,b", not hex): a dark, saturated primary
+  icons      <- Papirus-Dark with folders in the Papirus color closest to the
+                primary, as a per-user icon theme (no root needed, unlike
+                papirus-folders which relinks /usr/share/icons).
+
+Never substituted: terminal ANSI color definitions (red, yellow, magenta,
+... in colors.toml, alacritty, kitty, ghostty, foot, vscode/zed terminal
+palettes) -- red must stay red in `git diff`.
+
+Palette source:
+  1. wallpaper-overrides.conf (shared with the RGB sync) -> primary
+  2. the wallpaper's distinct vivid hues (up to 3 clusters >= 35 deg apart,
+     each covering >= 10% of the strongest one's colorful area); missing
+     ones are derived from the primary's hue (+40 / -40 deg)
+  3. mostly-black/neutral wallpaper -> silver / gray accents, gray neutrals
+  4. no usable color -> Coppernight's own colors
+Each color is brought to Coppernight's accent lightness/saturation range so
+it stays readable on the dark background.
+
+When wpanfilli is the active theme and the palette changed, re-applies it with
+`omarchy theme refresh` (keeps the current background). Called by
+omarchy-openrgb-wallpaper-watch on every background change.
+
+Usage: omarchy-theme-wpanfilli-render [--force] [--dry-run]
+"""
+import colorsys
+import configparser
+import fcntl
+import glob
+import importlib.machinery
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+HOME = os.path.expanduser("~")
+THEME = "wpanfilli"
+TEMPLATE = f"{HOME}/.local/share/omarchy-wpanfilli/template"
+THEME_DIR = f"{HOME}/.config/omarchy/themes/{THEME}"
+STATE_DIR = f"{HOME}/.local/state/omarchy-wpanfilli"
+CACHE = f"{HOME}/.cache/omarchy-wpanfilli/palettes.tsv"
+CURRENT = f"{HOME}/.local/state/omarchy/current"
+PICKER = f"{HOME}/.local/bin/omarchy-openrgb-pick-colors.py"
+USER_ICONS = f"{HOME}/.local/share/icons"
+PAPIRUS = "/usr/share/icons/Papirus-Dark"
+ICON_PREFIX = "Papirus-Dark-WP-"
+
+BASE = {"primary": "fab387", "secondary": "c6a0f6", "tertiary": "ed8796"}
+NEUTRALS = ["11111b", "0b0b12", "060609", "1e1e2e", "181825", "313244",
+            "5b6078", "6e738d", "939ab2", "a5adcb", "b8c0e0", "cad3f5"]
+# Target lightness per role (Coppernight: #fab387 L=.74, #c6a0f6 L=.80).
+ROLE_LIGHTNESS = {"primary": 0.74, "secondary": 0.78, "tertiary": 0.72}
+SAT_RANGE = (0.55, 0.92)
+TEXT_SAT_MAX = 0.35  # light neutrals are text: keep them near-white
+
+# Terminal ANSI palette definitions -- never recolored.
+ANSI_LINE_RE = re.compile(
+    r"^\s*(?:bright_)?(?:black|red|green|yellow|orange|blue|magenta|cyan|white|brown)\s*="
+    r"|^\s*color\d+\b|^\s*palette\s*=\s*\d+\s*="
+    r"|^\s*(?:regular|bright)\d\s*="
+    r"|terminal\.ansi",
+    re.IGNORECASE)
+CURSOR_LINE_RE = re.compile(r"cursor", re.IGNORECASE)
+HYPR_ACTIVE_RE = re.compile(r'^(\s*local active_border_color\s*=\s*).*$', re.M)
+COLORS_ACTIVE_RE = re.compile(r'^(\s*hyprland_active_border\s*=\s*).*$', re.M)
+
+# Papirus folder colors (folder-<name>.svg) and their approximate hex.
+PAPIRUS_COLORS = {
+    "red": "e25252", "carmine": "a30002", "deeporange": "eb6637",
+    "orange": "ee923a", "paleorange": "eeca8f", "yellow": "f9bd30",
+    "brown": "ae8e6c", "palebrown": "d1bfae", "green": "87b158",
+    "teal": "16a085", "darkcyan": "45abb7", "cyan": "00bcd4",
+    "blue": "5294e2", "indigo": "5c6bc0", "violet": "7e57c2",
+    "magenta": "ca71df", "pink": "f06292", "bluegrey": "607d8b",
+    "nordic": "81a1c1", "grey": "8e8e8e", "white": "e4e4e4",
+}
+ICON_SIZES = ["22x22", "24x24", "32x32", "48x48", "64x64"]
+
+
+# ---------------------------------------------------------------- colors --
+
+def hex_to_hls(h):
+    return colorsys.rgb_to_hls(*(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)))
+
+
+def hls_to_hex(h, l, s):
+    return "".join(f"{round(c * 255):02x}"
+                   for c in colorsys.hls_to_rgb(h % 1.0, l, s))
+
+
+def to_role(hex_color, role):
+    h, _, s = hex_to_hls(hex_color)
+    s = min(max(s, SAT_RANGE[0]), SAT_RANGE[1])
+    return hls_to_hex(h, ROLE_LIGHTNESS[role], s)
+
+
+def wallpaper_hues(path):
+    """Up to 3 distinct dominant vivid colors ('rrggbb'), or 'DARK'/'NONE'.
+    Same pixel weighting as the RGB picker (saturation x brightness)."""
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(path) as img:
+        img = img.convert("RGB")
+        img.thumbnail((256, 256))
+        rgb = np.asarray(img, dtype=np.float64).reshape(-1, 3) / 255
+
+    mx, mn = rgb.max(axis=1), rgb.min(axis=1)
+    delta = mx - mn
+    sat = np.where(mx > 0, delta / np.maximum(mx, 1e-9), 0)
+    r, g, b = rgb.T
+    d = np.maximum(delta, 1e-9)
+    hue = np.select([mx == r, mx == g],
+                    [((g - b) / d) % 6, (b - r) / d + 2], (r - g) / d + 4) * 60
+
+    vivid = (sat > 0.20) & (mx > 0.15)
+    dark = mx <= 0.20
+    if dark.mean() > 0.60 and vivid.sum() < 0.10 * max((~dark).sum(), 1):
+        return "DARK"
+    if vivid.mean() < 0.03:
+        return "NONE"
+
+    weight = np.where(vivid, sat * mx, 0)
+    bins = 36
+    hist = np.bincount((hue // 10).astype(int) % bins, weights=weight,
+                       minlength=bins)
+    hist = hist + 0.5 * (np.roll(hist, 1) + np.roll(hist, -1))
+
+    colors, top = [], None
+    for _ in range(3):
+        i = int(hist.argmax())
+        mass = hist[i]
+        if mass <= 0 or (top is not None and mass < 0.10 * top):
+            break
+        top = top or mass
+        peak = (i + 0.5) * 10
+        dist = np.abs((hue - peak + 180) % 360 - 180)
+        sel = vivid & (dist <= 20)
+        w = weight[sel]
+        avg = (rgb[sel] * w[:, None]).sum(axis=0) / w.sum()
+        colors.append("".join(f"{round(c * 255):02x}" for c in avg))
+        # Suppress +-35 deg around this peak so the next one is distinct.
+        centers = (np.arange(bins) + 0.5) * 10
+        hist[np.abs((centers - peak + 180) % 360 - 180) < 35] = 0
+    return ",".join(colors)
+
+
+def cached_wallpaper_hues(path):
+    real = os.path.realpath(path)
+    st = os.stat(real)
+    key = f"{real}\t{st.st_size}\t{int(st.st_mtime)}"
+    entries = {}
+    try:
+        with open(CACHE, encoding="utf-8") as f:
+            for line in f:
+                k, _, v = line.rstrip("\n").rpartition("\t")
+                entries[k] = v
+    except OSError:
+        pass
+    if key not in entries:
+        entries[key] = wallpaper_hues(real)
+        os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+        with open(CACHE + ".tmp", "w", encoding="utf-8") as f:
+            for k, v in list(entries.items())[-500:]:
+                f.write(f"{k}\t{v}\n")
+        os.replace(CACHE + ".tmp", CACHE)
+    return entries[key]
+
+
+def build_palette(picker):
+    bg = f"{CURRENT}/background"
+    name = os.path.basename(os.path.realpath(bg))
+    hues = cached_wallpaper_hues(bg)
+
+    if hues == "DARK":
+        found, kind = [], "dark"
+    elif hues == "NONE":
+        found, kind = [], "none"
+    else:
+        found, kind = hues.split(","), "wallpaper"
+
+    override = picker.wallpaper_override(name)
+    if override:
+        found = [override.lower()] + [c for c in found
+                                      if abs(hex_to_hls(c)[0] - hex_to_hls(override)[0]) > 0.1]
+        kind = "override"
+
+    if kind == "none":
+        return dict(BASE, neutral_hue=None, neutral_sat=1.0, icons="orange",
+                    source=f"no-color:{name}")
+    if kind == "dark":
+        return {"primary": "c8ccd8", "secondary": "8f94a6", "tertiary": "e6e8ef",
+                "neutral_hue": hex_to_hls("c8ccd8")[0], "neutral_sat": 0.15,
+                "icons": "grey", "source": f"dark:{name}"}
+
+    primary = to_role(found[0], "primary")
+    ph, _, ps = hex_to_hls(found[0])
+    ps = min(max(ps, SAT_RANGE[0]), SAT_RANGE[1])
+    secondary = (to_role(found[1], "secondary") if len(found) > 1
+                 else hls_to_hex(ph + 40 / 360, ROLE_LIGHTNESS["secondary"], ps))
+    tertiary = (to_role(found[2], "tertiary") if len(found) > 2
+                else hls_to_hex(ph - 40 / 360, ROLE_LIGHTNESS["tertiary"], ps))
+    return {"primary": primary, "secondary": secondary, "tertiary": tertiary,
+            "neutral_hue": hex_to_hls(primary)[0], "neutral_sat": 1.0,
+            "icons": nearest_papirus(primary), "source": f"{kind}:{name}"}
+
+
+def nearest_papirus(hex_color):
+    h, l, s = hex_to_hls(hex_color)
+    best, best_d = "orange", 9.0
+    for name, ref in PAPIRUS_COLORS.items():
+        rh, rl, rs = hex_to_hls(ref)
+        dh = min(abs(h - rh), 1 - abs(h - rh))
+        if rs < 0.25 or s < 0.25:  # grays: compare on saturation/lightness
+            d = abs(s - rs) * 2 + abs(l - rl)
+        else:
+            d = dh * 4 + abs(s - rs) * 0.5 + abs(l - rl) * 0.5
+        if d < best_d:
+            best, best_d = name, d
+    return best
+
+
+def neutral_map(pal):
+    """Coppernight neutral -> same lightness/saturation, wallpaper hue."""
+    if pal["neutral_hue"] is None:
+        return {}
+    out = {}
+    for n in NEUTRALS:
+        _, l, s = hex_to_hls(n)
+        s *= pal["neutral_sat"]
+        if l > 0.5:
+            s = min(s, TEXT_SAT_MAX)
+        out[n] = hls_to_hex(pal["neutral_hue"], l, s)
+    return out
+
+
+# ---------------------------------------------------------------- render --
+
+def substitute(text, pal, nmap):
+    mapping = {BASE["primary"]: pal["primary"],
+               BASE["secondary"]: pal["secondary"], **nmap}
+    pattern = re.compile("|".join(mapping), re.IGNORECASE)
+    rgb_pat = re.compile(r"250,\s*179,\s*135")
+    rgb_new = ", ".join(str(int(pal["primary"][i:i + 2], 16)) for i in (0, 2, 4))
+    tert_pat = re.compile(BASE["tertiary"], re.IGNORECASE)
+
+    def repl(m):
+        new = mapping[m.group(0).lower()]
+        return new.upper() if m.group(0).isupper() else new
+
+    out = []
+    for line in text.splitlines(keepends=True):
+        if not ANSI_LINE_RE.search(line):
+            line = pattern.sub(repl, line)
+            line = rgb_pat.sub(rgb_new, line)
+            if CURSOR_LINE_RE.search(line):
+                line = tert_pat.sub(pal["tertiary"], line)
+        out.append(line)
+    return "".join(out)
+
+
+def render_file(name, text, pal, nmap):
+    text = substitute(text, pal, nmap)
+    p, t = pal["primary"], pal["tertiary"]
+    if name == "hyprland.lua":
+        text = HYPR_ACTIVE_RE.sub(
+            rf'\1{{ colors = {{ "rgb({p})", "rgb({t})" }}, angle = 45 }}', text, count=1)
+    elif name == "colors.toml":
+        text = COLORS_ACTIVE_RE.sub(rf'\1"rgb({p}) rgb({t}) 45deg"', text, count=1)
+    elif name == "icons.theme":
+        text = ICON_PREFIX + pal["icons"] + "\n"
+    elif name == "keyboard.rgb":
+        text = f"#{p}\n"
+    elif name == "chromium.theme":
+        # Chromium's toolbar seed color (Omarchy writes it into the browser
+        # policy as "r,g,b"). Coppernight's was its near-black background,
+        # which barely differs between wallpapers; a dark but saturated
+        # primary makes the browser visibly follow the wallpaper.
+        h, _, s = hex_to_hls(p)
+        r, g, b = colorsys.hls_to_rgb(h, 0.20, min(s, 0.45) if pal["neutral_sat"] == 1.0 else 0.05)
+        text = f"{round(r * 255)},{round(g * 255)},{round(b * 255)}\n"
+    return text
+
+
+def render(pal):
+    nmap = neutral_map(pal)
+    for root, _, files in os.walk(TEMPLATE):
+        rel = os.path.relpath(root, TEMPLATE)
+        dest_root = os.path.normpath(os.path.join(THEME_DIR, rel))
+        os.makedirs(dest_root, exist_ok=True)
+        for f in files:
+            src, dst = os.path.join(root, f), os.path.join(dest_root, f)
+            try:
+                with open(src, encoding="utf-8") as fh:
+                    text = fh.read()
+            except UnicodeDecodeError:  # images etc.
+                shutil.copy2(src, dst)
+                continue
+            new = render_file(f, text, pal, nmap)
+            try:
+                with open(dst, encoding="utf-8") as fh:
+                    if fh.read() == new:
+                        continue
+            except (OSError, UnicodeDecodeError):
+                pass
+            with open(dst, "w", encoding="utf-8") as fh:
+                fh.write(new)
+            shutil.copymode(src, dst)
+
+
+def ensure_icon_theme(color):
+    """Per-user Papirus-Dark variant with `color` folders: symlinks to the
+    system's folder-<color>*.svg under the plain names, everything else
+    inherited. The color is in the theme name so GTK reloads on change."""
+    name = ICON_PREFIX + color
+    dest = os.path.join(USER_ICONS, name)
+    for old in glob.glob(os.path.join(USER_ICONS, ICON_PREFIX + "*")):
+        if old != dest:
+            shutil.rmtree(old, ignore_errors=True)
+    if os.path.exists(os.path.join(dest, "index.theme")):
+        return
+
+    src_index = configparser.RawConfigParser(strict=False)
+    src_index.optionxform = str
+    src_index.read(os.path.join(PAPIRUS, "index.theme"))
+    dirs = [f"{s}/places" for s in ICON_SIZES]
+    lines = ["[Icon Theme]", f"Name={name}",
+             f"Comment=Papirus-Dark with {color} folders (wpanfilli theme)",
+             "Inherits=Papirus-Dark,breeze-dark,hicolor",
+             "Directories=" + ",".join(dirs), ""]
+    for d in dirs:
+        lines.append(f"[{d}]")
+        for k, v in src_index.items(d):
+            lines.append(f"{k}={v}")
+        lines.append("")
+
+    for size in ICON_SIZES:
+        src_dir = os.path.join(PAPIRUS, size, "places")
+        out_dir = os.path.join(dest, size, "places")
+        os.makedirs(out_dir, exist_ok=True)
+        for prefix in (f"folder-{color}", f"user-{color}"):
+            for path in glob.glob(os.path.join(src_dir, prefix + "*.svg")):
+                base = os.path.basename(path)
+                if not (base == prefix + ".svg" or base.startswith(prefix + "-")):
+                    continue  # e.g. folder-red vs folder-redhat
+                plain = base.replace(f"-{color}", "", 1)
+                os.symlink(os.path.realpath(path), os.path.join(out_dir, plain))
+    with open(os.path.join(dest, "index.theme"), "w") as f:
+        f.write("\n".join(lines))
+
+
+def main():
+    force = "--force" in sys.argv
+    dry = "--dry-run" in sys.argv
+    os.makedirs(STATE_DIR, exist_ok=True)
+    lock = open(f"{STATE_DIR}/render.lock", "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+
+    picker = importlib.machinery.SourceFileLoader("picker", PICKER).load_module()
+    pal = build_palette(picker)
+    sig = " ".join(f"{k}={pal[k]}" for k in ("primary", "secondary", "tertiary", "icons"))
+    print(f"{sig} ({pal['source']})")
+    if dry:
+        return
+
+    last_file = f"{STATE_DIR}/palette"
+    try:
+        with open(last_file) as f:
+            last = f.read().strip()
+    except OSError:
+        last = ""
+    if sig + f" n={pal['neutral_hue']}" == last and not force:
+        print("palette unchanged, nothing to do")
+        return
+
+    ensure_icon_theme(pal["icons"])
+    render(pal)
+    with open(last_file, "w") as f:
+        f.write(sig + f" n={pal['neutral_hue']}\n")
+
+    try:
+        with open(f"{CURRENT}/theme.name") as f:
+            active = f.read().strip() == THEME
+    except OSError:
+        active = False
+    if active:
+        # Keeps the current background (OMARCHY_THEME_SKIP_BACKGROUND).
+        subprocess.run(["omarchy", "theme", "refresh"],
+                       stdout=subprocess.DEVNULL, check=False)
+        print("re-applied active theme")
+
+
+if __name__ == "__main__":
+    main()

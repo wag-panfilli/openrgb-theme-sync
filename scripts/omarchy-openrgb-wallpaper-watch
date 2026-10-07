@@ -1,0 +1,39 @@
+#!/bin/bash
+# Re-syncs RGB whenever the Omarchy background changes. Omarchy fires no hook
+# for `omarchy theme bg next/set` or the background switcher -- they only
+# repoint the ~/.local/state/omarchy/current/background symlink (ln -nsf, i.e.
+# create temp link + rename) -- so watch that directory for it.
+# Runs as the systemd user service omarchy-openrgb-wallpaper-watch.service.
+# Theme switches also repoint the symlink; the theme-set hook and this both
+# end up in omarchy-openrgb-theme-sync, which serializes itself with flock and
+# skips a repeat of the color it just applied.
+set -u
+
+STATE_DIR="$HOME/.local/state/omarchy/current"
+SYNC="$HOME/.local/bin/omarchy-openrgb-theme-sync"
+WPANFILLI_RENDER="$HOME/.local/bin/omarchy-theme-wpanfilli-render"
+
+mkdir -p "$STATE_DIR"
+last=$(readlink -f "$STATE_DIR/background" 2>/dev/null || true)
+
+# Monitor mode (-m) keeps one inotify watch alive, so changes made while a
+# sync is running are queued instead of lost. React to the first event for
+# the `background` link right away, only draining events that arrive within
+# 0.15s of it (a theme switch touches the dir several times in a burst).
+inotifywait -mq -e create -e moved_to --format '%f' "$STATE_DIR" |
+while IFS= read -r file; do
+    [[ $file == background ]] || continue
+    while IFS= read -r -t 0.15 _; do :; done
+
+    current=$(readlink -f "$STATE_DIR/background" 2>/dev/null || true)
+    if [[ -n $current && $current != "$last" ]]; then
+        last=$current
+        "$SYNC" || true
+        # The "wpanfilli" theme takes its accent from the wallpaper: re-render
+        # and re-apply it (after the LEDs, which are much faster). Its
+        # `omarchy theme refresh` keeps the background, so no event loop.
+        if [[ $(cat "$STATE_DIR/theme.name" 2>/dev/null) == wpanfilli ]]; then
+            "$WPANFILLI_RENDER" || true
+        fi
+    fi
+done
