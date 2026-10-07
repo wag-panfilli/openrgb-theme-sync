@@ -154,7 +154,7 @@ python -m venv ~/.local/share/omarchy-openrgb/venv
 
 ### Passo 2 — instalar os scripts
 ```bash
-git clone https://github.com/<usuario>/openrgb-theme-sync.git
+git clone https://github.com/wag-panfilli/openrgb-theme-sync.git
 cd openrgb-theme-sync
 install -Dm755 scripts/omarchy-openrgb-{theme-sync,pick-colors.py,apply.py,wallpaper-watch} -t ~/.local/bin/
 install -Dm644 scripts/{led.conf,wallpaper-overrides.conf} -t ~/.config/omarchy-openrgb/
