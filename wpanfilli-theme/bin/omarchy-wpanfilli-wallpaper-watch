@@ -1,0 +1,36 @@
+#!/bin/bash
+# Re-renders the "wpanfilli" theme whenever the Omarchy background changes.
+# Omarchy fires no hook for `omarchy theme bg next/set` or the background
+# switcher -- they only repoint the ~/.local/state/omarchy/current/background
+# symlink (ln -nsf: temp link + rename) -- so watch that directory for it.
+# Runs as the systemd user service omarchy-wpanfilli-wallpaper-watch.service.
+#
+# Not needed (and not installed) when omarchy-openrgb-wallpaper-watch (../scripts/ in
+# this repo) is present: that one already
+# calls the renderer after syncing the LEDs.
+set -u
+
+STATE_DIR="$HOME/.local/state/omarchy/current"
+RENDER="$HOME/.local/bin/omarchy-theme-wpanfilli-render"
+
+mkdir -p "$STATE_DIR"
+last=$(readlink -f "$STATE_DIR/background" 2>/dev/null || true)
+
+# Monitor mode (-m) keeps one inotify watch alive, so changes made while a
+# render is running are queued instead of lost. Events arriving within 0.15s
+# of the first one are drained (a theme switch touches the dir in a burst).
+inotifywait -mq -e create -e moved_to --format '%f' "$STATE_DIR" |
+while IFS= read -r file; do
+    [[ $file == background ]] || continue
+    while IFS= read -r -t 0.15 _; do :; done
+
+    current=$(readlink -f "$STATE_DIR/background" 2>/dev/null || true)
+    if [[ -n $current && $current != "$last" ]]; then
+        last=$current
+        # `omarchy theme refresh` inside the renderer keeps the background,
+        # so this doesn't loop.
+        if [[ $(cat "$STATE_DIR/theme.name" 2>/dev/null) == wpanfilli ]]; then
+            "$RENDER" || true
+        fi
+    fi
+done

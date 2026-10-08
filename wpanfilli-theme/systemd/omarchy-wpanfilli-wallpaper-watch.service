@@ -1,0 +1,12 @@
+[Unit]
+Description=Re-render the wpanfilli Omarchy theme on wallpaper change
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/omarchy-wpanfilli-wallpaper-watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

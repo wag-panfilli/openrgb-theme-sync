@@ -1,0 +1,54 @@
+# Must precede the [colors.*] tables: bare dotted keys below a table header are
+# parsed as children of that table, which made these register as
+# colors.bright.window.* and trip "Unused config key: window".
+[window]
+padding = { x = 10, y = 10 }
+opacity = 0.9
+
+[colors.primary]
+background = "#11111b"
+foreground = "#cad3f5"
+
+[colors.cursor]
+text = "#11111b"
+cursor = "#ed8796"
+
+[colors.vi_mode_cursor]
+text = "#11111b"
+cursor = "#ed8796"
+
+[colors.search.matches]
+foreground = "#11111b"
+background = "#eed49f"
+
+[colors.search.focused_match]
+foreground = "#11111b"
+background = "#ed8796"
+
+[colors.footer_bar]
+foreground = "#11111b"
+background = "#cad3f5"
+
+[colors.selection]
+text = "#cad3f5"
+background = "#313244"
+
+[colors.normal]
+black = "#11111b"
+red = "#ed8796"
+green = "#a6da95"
+yellow = "#eed49f"
+blue = "#8aadf4"
+magenta = "#c6a0f6"
+cyan = "#8bd5ca"
+white = "#cad3f5"
+
+[colors.bright]
+black = "#5b6078"
+red = "#ed8796"
+green = "#a6da95"
+yellow = "#fab387"
+blue = "#8aadf4"
+magenta = "#c6a0f6"
+cyan = "#8bd5ca"
+white = "#cad3f5"

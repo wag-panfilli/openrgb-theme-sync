@@ -212,7 +212,8 @@ Mask.jpeg" = `8B0000` (vermelho escuro).
 ## Tema "wpanfilli" (2026-10-04)
 
 Clone do Coppernight cuja cor de destaque segue o wallpaper (UI + LEDs
-coerentes). Detalhes em `~/.local/share/omarchy-wpanfilli/README.md`. O
+coerentes). Detalhes e instalação em
+[`wpanfilli-theme/README.md`](../wpanfilli-theme/README.md). O
 watcher chama `omarchy-theme-wpanfilli-render` depois do sync de RGB quando
 o tema ativo é `wpanfilli`; o re-tema leva ~1,6s (custo do
 `omarchy theme refresh`), o RGB continua ~0,3s.

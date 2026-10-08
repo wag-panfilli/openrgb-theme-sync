@@ -119,14 +119,19 @@ scripts/
 ├── omarchy-openrgb-wallpaper-watch         observa troca de wallpaper (inotify)
 ├── omarchy-openrgb-wallpaper-watch.service unit systemd --user do watcher
 ├── led.conf                                ajustes de correção de cor e fonte da cor
-├── wallpaper-overrides.conf                cor fixa por wallpaper
-├── omarchy-theme-wpanfilli-render          (extra) tema do Omarchy recolorido pelo wallpaper
-└── omarchy-wpanfilli-gtk-sync              (extra) aplica esse tema no GTK/Nautilus
+└── wallpaper-overrides.conf                cor fixa por wallpaper
+wpanfilli-theme/                            tema do Omarchy que também segue o wallpaper
+├── install.sh / uninstall.sh               instalação completa do tema
+├── bin/                                    renderizador + watcher próprio
+├── hooks/                                  hook theme-set (GTK/Nautilus, accent libadwaita)
+├── systemd/                                unit do watcher (só sem o sync de RGB)
+├── template/                               Coppernight intacto (base do render)
+└── backgrounds/                            wallpapers do tema
 docs/
 └── 01 … 07                                 um doc por problema técnico (ver tabela acima)
 ```
 
-Os dois scripts marcados como *(extra)* são opcionais: geram um tema do Omarchy cuja interface (bordas, barra, ícones) também segue o wallpaper, deixando tela e LEDs coerentes.
+A pasta [`wpanfilli-theme/`](wpanfilli-theme/) é opcional: um tema completo do Omarchy (bordas, barra, terminais, editores, GTK/Nautilus, navegador, ícones) recolorido a partir do wallpaper a cada troca, deixando tela e LEDs coerentes. Funciona também sem OpenRGB — veja o [README dela](wpanfilli-theme/README.md).
 
 ---
 

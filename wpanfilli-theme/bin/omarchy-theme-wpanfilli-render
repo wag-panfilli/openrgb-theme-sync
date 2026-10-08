@@ -27,7 +27,8 @@ Never substituted: terminal ANSI color definitions (red, yellow, magenta,
 palettes) -- red must stay red in `git diff`.
 
 Palette source:
-  1. wallpaper-overrides.conf (shared with the RGB sync) -> primary
+  1. wallpaper-overrides.conf -> primary (~/.config/omarchy-wpanfilli/, or
+     the one shared with omarchy-openrgb-theme-sync if that exists)
   2. the wallpaper's distinct vivid hues (up to 3 clusters >= 35 deg apart,
      each covering >= 10% of the strongest one's colorful area); missing
      ones are derived from the primary's hue (+40 / -40 deg)
@@ -38,7 +39,8 @@ it stays readable on the dark background.
 
 When wpanfilli is the active theme and the palette changed, re-applies it with
 `omarchy theme refresh` (keeps the current background). Called by
-omarchy-openrgb-wallpaper-watch on every background change.
+omarchy-wpanfilli-wallpaper-watch (or omarchy-openrgb-wallpaper-watch) on
+every background change.
 
 Usage: omarchy-theme-wpanfilli-render [--force] [--dry-run]
 """
@@ -46,7 +48,6 @@ import colorsys
 import configparser
 import fcntl
 import glob
-import importlib.machinery
 import os
 import re
 import shutil
@@ -60,7 +61,8 @@ THEME_DIR = f"{HOME}/.config/omarchy/themes/{THEME}"
 STATE_DIR = f"{HOME}/.local/state/omarchy-wpanfilli"
 CACHE = f"{HOME}/.cache/omarchy-wpanfilli/palettes.tsv"
 CURRENT = f"{HOME}/.local/state/omarchy/current"
-PICKER = f"{HOME}/.local/bin/omarchy-openrgb-pick-colors.py"
+OVERRIDES_FILES = [f"{HOME}/.config/omarchy-wpanfilli/wallpaper-overrides.conf",
+                   f"{HOME}/.config/omarchy-openrgb/wallpaper-overrides.conf"]
 USER_ICONS = f"{HOME}/.local/share/icons"
 PAPIRUS = "/usr/share/icons/Papirus-Dark"
 ICON_PREFIX = "Papirus-Dark-WP-"
@@ -165,6 +167,25 @@ def wallpaper_hues(path):
     return ",".join(colors)
 
 
+def wallpaper_override(name):
+    """Per-wallpaper color, matched by file name: lines `<file name> = RRGGBB`
+    ('#' starts a comment line). First file that has the name wins."""
+    for path in OVERRIDES_FILES:
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.rpartition("=")
+                    m = re.fullmatch(r"#?([0-9a-fA-F]{6})", value.strip())
+                    if key.strip() == name and m:
+                        return m.group(1)
+        except OSError:
+            pass
+    return None
+
+
 def cached_wallpaper_hues(path):
     real = os.path.realpath(path)
     st = os.stat(real)
@@ -187,7 +208,7 @@ def cached_wallpaper_hues(path):
     return entries[key]
 
 
-def build_palette(picker):
+def build_palette():
     bg = f"{CURRENT}/background"
     name = os.path.basename(os.path.realpath(bg))
     hues = cached_wallpaper_hues(bg)
@@ -199,7 +220,7 @@ def build_palette(picker):
     else:
         found, kind = hues.split(","), "wallpaper"
 
-    override = picker.wallpaper_override(name)
+    override = wallpaper_override(name)
     if override:
         found = [override.lower()] + [c for c in found
                                       if abs(hex_to_hls(c)[0] - hex_to_hls(override)[0]) > 0.1]
@@ -376,8 +397,7 @@ def main():
     lock = open(f"{STATE_DIR}/render.lock", "w")
     fcntl.flock(lock, fcntl.LOCK_EX)
 
-    picker = importlib.machinery.SourceFileLoader("picker", PICKER).load_module()
-    pal = build_palette(picker)
+    pal = build_palette()
     sig = " ".join(f"{k}={pal[k]}" for k in ("primary", "secondary", "tertiary", "icons"))
     print(f"{sig} ({pal['source']})")
     if dry:

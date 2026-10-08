@@ -1,0 +1,128 @@
+#!/bin/bash
+# Papirus-Dark + orange folders + peach cursor for coppernight.
+# Run in a terminal (install steps need your sudo password):
+#   ./apply-icons.sh
+set -e
+
+THEME_DIR="$(cd "$(dirname "$0")" && pwd)"
+PASS=0
+FAIL=0
+
+ok()   { PASS=$((PASS + 1)); echo "  ✓ $1"; }
+warn() { FAIL=$((FAIL + 1)); echo "  ✗ $1"; }
+
+echo "→ Coppernight icon + cursor setup (Papirus-Dark orange folders + peach cursor)"
+
+# 1. Install Papirus icon theme if missing
+if pacman -Q papirus-icon-theme >/dev/null 2>&1; then
+  ok "papirus-icon-theme already installed"
+elif command -v omarchy >/dev/null 2>&1; then
+  echo "→ installing papirus-icon-theme (sudo password needed)"
+  if omarchy pkg add papirus-icon-theme; then
+    ok "papirus-icon-theme installed"
+  else
+    warn "install failed — run 'omarchy pkg add papirus-icon-theme' manually"
+  fi
+else
+  warn "omarchy not found — install papirus-icon-theme with your package manager"
+fi
+
+# 2. Orange folders for Papirus-Dark, via the papirus-folders helper.
+#    NOTE: papirus-folders is a standalone helper (PapirusDevelopmentTeam, or
+#    the Catppuccin fork) — NOT part of papirus-icon-theme. papirus-icon-theme
+#    ships a full-size set of coloured folder SVGs, but only 16x16/folder-orange;
+#    every other size stays stock blue until the helper relinks them.
+#    The Catppuccin fork (papirus-folders-catppuccin-git) is what omarchy users
+#    actually end up with, and it is what remove-icons.sh uninstalls — so try it
+#    first and fall back to upstream papirus-folders.
+if ! command -v papirus-folders >/dev/null 2>&1; then
+  for pkg in papirus-folders-catppuccin-git papirus-folders; do
+    if pacman -Q "$pkg" >/dev/null 2>&1; then
+      ok "$pkg already installed"
+      break
+    fi
+    echo "→ installing $pkg (sudo password needed)"
+    if command -v yay >/dev/null 2>&1; then
+      if yay -S --needed --noconfirm "$pkg"; then ok "$pkg installed"; break; fi
+    elif command -v omarchy >/dev/null 2>&1; then
+      if omarchy pkg aur add "$pkg"; then ok "$pkg installed"; break; fi
+    else
+      warn "no AUR helper (yay/omarchy) — install $pkg manually"
+      break
+    fi
+    warn "could not install $pkg"
+  done
+fi
+
+if command -v papirus-folders >/dev/null 2>&1; then
+  echo "→ papirus-folders -C orange --theme Papirus-Dark"
+  if papirus-folders -C orange --theme Papirus-Dark >/dev/null 2>&1; then
+    ok "folders set to orange"
+  else
+    warn "papirus-folders failed — re-run it by hand: papirus-folders -C orange --theme Papirus-Dark"
+  fi
+else
+  warn "papirus-folders unavailable — folders stay stock Papirus blue"
+fi
+
+# 2b. Verify the relink actually took, per icon size. papirus-folders exits 0
+#     even when it changes nothing, and Nautilus silently falls back to blue,
+#     so check the resolved symlinks rather than trusting the exit code.
+for size in 16x16 24x24 32x32 48x48 64x64 128x128 256x256; do
+  folder="/usr/share/icons/Papirus-Dark/$size/places/folder.svg"
+  # 16x16 ships per-colour drawings rather than symlinks, so only relinked
+  # sizes can be verified this way.
+  [ -L "$folder" ] || continue
+  resolved="$(readlink -f "$folder")"
+  case "$resolved" in
+    *orange*) ;;
+    *) warn "$size folder is not orange -> $(basename "$resolved")" ;;
+  esac
+done
+
+# 3. Install Catppuccin Macchiato cursor theme if missing (AUR).
+#    Ships 16 Macchiato colour variants; we use the peach one, which is
+#    #fab387 — the same Copper accent as the borders, topbar and folders.
+CURSOR_PKG="catppuccin-cursors-macchiato"
+CURSOR_NAME="catppuccin-macchiato-peach-cursors"
+
+if pacman -Q "$CURSOR_PKG" >/dev/null 2>&1; then
+  ok "$CURSOR_PKG already installed"
+elif command -v omarchy >/dev/null 2>&1; then
+  echo "→ installing $CURSOR_PKG from AUR (sudo password needed)"
+  if omarchy pkg aur add "$CURSOR_PKG"; then
+    ok "$CURSOR_PKG installed"
+  else
+    warn "install failed — run 'omarchy pkg aur add $CURSOR_PKG' manually"
+  fi
+else
+  warn "omarchy not found — install $CURSOR_PKG from AUR manually"
+fi
+
+# 4. Apply the peach cursor (GTK + Hyprland, best effort)
+if [ -d "/usr/share/icons/$CURSOR_NAME" ] || [ -d "$HOME/.icons/$CURSOR_NAME" ] \
+    || [ -d "$HOME/.local/share/icons/$CURSOR_NAME" ]; then
+  echo "→ applying $CURSOR_NAME"
+  gsettings set org.gnome.desktop.interface cursor-theme "$CURSOR_NAME" 2>/dev/null \
+    && ok "GNOME cursor applied" || warn "gsettings cursor apply failed"
+  if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl setcursor "$CURSOR_NAME" 24 >/dev/null 2>&1 \
+      && ok "Hyprland cursor applied" || warn "hyprctl setcursor failed"
+  fi
+else
+  warn "$CURSOR_NAME not found — cursor not applied"
+fi
+
+# 5. Point this theme at Papirus-Dark
+echo "Papirus-Dark" > "$THEME_DIR/icons.theme" && ok "icons.theme → Papirus-Dark"
+
+# 6. Apply now (best effort each step)
+gsettings set org.gnome.desktop.interface icon-theme "Papirus-Dark" 2>/dev/null \
+  && ok "GNOME icon theme applied" || warn "gsettings apply failed"
+if command -v omarchy >/dev/null 2>&1; then
+  timeout 60 omarchy theme set coppernight >/dev/null 2>&1 \
+    && ok "omarchy theme restaged" || warn "theme restage skipped/failed (harmless)"
+fi
+
+echo "— Summary: $PASS ok, $FAIL failed —"
+echo "✓ Done — folders are orange, cursor is Catppuccin Macchiato peach. Log out/in if anything looks stale."

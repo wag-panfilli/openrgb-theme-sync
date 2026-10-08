@@ -1,0 +1,19 @@
+# Coppernight for lazygit — deep indigo + glowing copper
+# Install: merge under ~/.config/lazygit/config.yml:
+#   gui:
+#     theme:
+#       activeBorderColor: ["#fab387", "bold"]
+#       ... (paste the block below)
+gui:
+  theme:
+    activeBorderColor: ["#fab387", "bold"]
+    inactiveBorderColor: ["#5b6078"]
+    searchingActiveBorderColor: ["#fab387", "bold"]
+    optionsTextColor: ["#8aadf4"]
+    selectedLineBgColor: ["#313244"]
+    cherryPickedCommitFgColor: ["#8aadf4"]
+    cherryPickedCommitBgColor: ["#c6a0f6"]
+    markedBaseCommitFgColor: ["#eed49f"]
+    markedBaseCommitBgColor: ["#eed49f"]
+    unstagedChangesColor: ["#ed8796"]
+    defaultFgColor: ["#cad3f5"]
