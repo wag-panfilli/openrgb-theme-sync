@@ -121,7 +121,8 @@ def read_keyboard_rgb(path):
 
 
 # v2: entries may hold DARK_NEUTRAL instead of a hex (v1 cached "" there).
-WALLPAPER_CACHE = os.path.expanduser("~/.cache/omarchy-openrgb/wallpaper-colors-v2.tsv")
+# v3: pixel weight changed to sat^2 * val^1.5 (glare/frames count less).
+WALLPAPER_CACHE = os.path.expanduser("~/.cache/omarchy-openrgb/wallpaper-colors-v3.tsv")
 
 # Sentinel from read_wallpaper_color() for "mostly black, the rest white/gray"
 # wallpapers. Cached as-is, not as a hex, so changing the configured color
@@ -176,8 +177,12 @@ def read_wallpaper_color(path):
     The literal most-common pixel of a wallpaper is usually a near-black or
     gray (sky, shadows, dark UI-friendly backgrounds), which on LEDs -- once
     normalized to full brightness -- turns into plain white. So pixels are
-    weighted by saturation * value: the hue that covers the most *colorful*
-    area wins. Within that hue band, the weighted average color is returned.
+    weighted by saturation^2 * value^1.5: the hue that covers the most
+    *colorful* area wins. Saturation is squared so washed-out pixels -- sun
+    glare, haze, warm-tinted highlights, bronze/brown frames and other
+    tinted neutrals -- barely count against the real colored areas; the
+    extra brightness weight keeps dark saturated backgrounds (navy skies,
+    deep shadows) from winning over the bright subject. Within that hue band, the weighted average color is returned.
     Returns DARK_NEUTRAL when the image is mostly black (> 60% of pixels at
     or below 20% brightness) and what's left is white/gray, with only specks
     of color (< 10% of the non-black pixels vivid) -- e.g. a dark artwork
@@ -219,7 +224,7 @@ def read_wallpaper_color(path):
 
     # Ignore near-gray and near-black pixels outright; weight the rest.
     vivid = (sat > 0.20) & (val > 0.15)
-    weight = np.where(vivid, sat * val, 0)
+    weight = np.where(vivid, sat ** 2 * val ** 1.5, 0)
     dark = val <= 0.20
     if dark.mean() > 0.60:
         rest = ~dark

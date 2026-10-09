@@ -130,7 +130,7 @@ Desde 2026-10-04 a cor padrão vem do **wallpaper atual**, não mais do tema
 
 **Algoritmo** (`read_wallpaper_color` em `omarchy-openrgb-pick-colors.py`):
 a imagem é reduzida para 256px, convertida para HSV e cada pixel recebe peso
-`saturação × brilho` (pixels com S ≤ 0,20 ou V ≤ 0,15 são ignorados). A cor
+`saturação² × brilho^1,5` (reflexo de sol, névoa e molduras bronze quase não contam) (pixels com S ≤ 0,20 ou V ≤ 0,15 são ignorados). A cor
 literalmente mais comum de um wallpaper costuma ser preto/cinza, que nos LEDs
 (normalizados para brilho máximo) vira branco — por isso vence o **matiz que
 cobre a maior área colorida**. Histograma de 36 faixas de 10° com suavização

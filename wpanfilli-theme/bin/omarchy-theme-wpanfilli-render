@@ -59,7 +59,7 @@ THEME = "wpanfilli"
 TEMPLATE = f"{HOME}/.local/share/omarchy-wpanfilli/template"
 THEME_DIR = f"{HOME}/.config/omarchy/themes/{THEME}"
 STATE_DIR = f"{HOME}/.local/state/omarchy-wpanfilli"
-CACHE = f"{HOME}/.cache/omarchy-wpanfilli/palettes.tsv"
+CACHE = f"{HOME}/.cache/omarchy-wpanfilli/palettes-v2.tsv"  # v2: sat^2 * val^1.5 weighting
 CURRENT = f"{HOME}/.local/state/omarchy/current"
 OVERRIDES_FILES = [f"{HOME}/.config/omarchy-wpanfilli/wallpaper-overrides.conf",
                    f"{HOME}/.config/omarchy-openrgb/wallpaper-overrides.conf"]
@@ -118,7 +118,8 @@ def to_role(hex_color, role):
 
 def wallpaper_hues(path):
     """Up to 3 distinct dominant vivid colors ('rrggbb'), or 'DARK'/'NONE'.
-    Same pixel weighting as the RGB picker (saturation x brightness)."""
+    Same pixel weighting as the RGB picker (saturation^2 x brightness^1.5:
+    sun glare, haze and bronze/brown frames barely count)."""
     import numpy as np
     from PIL import Image
 
@@ -142,7 +143,7 @@ def wallpaper_hues(path):
     if vivid.mean() < 0.03:
         return "NONE"
 
-    weight = np.where(vivid, sat * mx, 0)
+    weight = np.where(vivid, sat ** 2 * mx ** 1.5, 0)
     bins = 36
     hist = np.bincount((hue // 10).astype(int) % bins, weights=weight,
                        minlength=bins)

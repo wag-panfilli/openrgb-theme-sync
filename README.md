@@ -80,7 +80,7 @@ O OpenRGB roda o tempo todo em modo `--server` (porta 6742) e é o **único proc
 
 ### 2. De onde vem a cor
 `scripts/omarchy-openrgb-pick-colors.py`:
-- **Wallpaper** (padrão): a imagem é reduzida a 256 px, convertida para HSV e cada pixel pesa `saturação × brilho`. Assim, vence o **matiz que cobre a maior área colorida** — não o preto/cinza que costuma ser a cor mais comum de um wallpaper (e que no LED viraria branco). Histograma de 36 faixas com suavização circular; a cor final é a média dos pixels perto do pico.
+- **Wallpaper** (padrão): a imagem é reduzida a 256 px, convertida para HSV e cada pixel pesa `saturação² × brilho^1,5`. Assim, vence o **matiz que cobre a maior área colorida** — não o preto/cinza que costuma ser a cor mais comum de um wallpaper (e que no LED viraria branco), nem reflexo de sol, névoa ou molduras bronze/marrons (cores "lavadas", de saturação baixa, quase não contam), nem um fundo escuro saturado (céu azul-marinho) contra um assunto claro. A mesma regra vale pro tema `wpanfilli`. Histograma de 36 faixas com suavização circular; a cor final é a média dos pixels perto do pico.
 - **Wallpaper quase todo preto** com só pontinhos de cor → branco (configurável).
 - **Wallpaper sem cor** → cai para a cor do tema (`keyboard.rgb` / `accent` do Omarchy).
 - **Override manual** por nome de arquivo em `wallpaper-overrides.conf`.
