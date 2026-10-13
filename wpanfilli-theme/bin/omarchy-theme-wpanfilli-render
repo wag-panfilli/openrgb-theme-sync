@@ -10,8 +10,14 @@ render copies it into the theme dir with colors substituted by role:
 
   primary    <- #fab387 (accent: bar text, active border, highlights)
   secondary  <- #c6a0f6 (inactive window border, secondary highlights)
-  tertiary   <- #ed8796 only where it's the cursor, and the second stop of
-                the active-border gradient (primary -> tertiary)
+  tertiary   <- #ed8796 only where it's the cursor
+  window     <- window borders: the primary slightly washed out (less
+                saturation), solid; inactive borders a dim, grayish primary.
+                The shell's [hyprland] border tokens (lock, notifications,
+                popups) follow it.
+  accent2    <- the wallpaper's secondary color, only on a few chosen spots
+                (SECONDARY_SPOTS): bar attention modules, shell hover/focus
+                cursor, prompt symbol, btop titles/hotkeys. Never on RGB.
   neutrals   <- Coppernight's blue-gray backgrounds / surfaces / text
                 (#11111b, #181825, #313244, #cad3f5, ...) re-hued to the
                 primary's hue, keeping each one's lightness, so window
@@ -84,7 +90,27 @@ ANSI_LINE_RE = re.compile(
     re.IGNORECASE)
 CURSOR_LINE_RE = re.compile(r"cursor", re.IGNORECASE)
 HYPR_ACTIVE_RE = re.compile(r'^(\s*local active_border_color\s*=\s*).*$', re.M)
+HYPR_INACTIVE_RE = re.compile(r'^(\s*local inactive_border_color\s*=\s*).*$', re.M)
 COLORS_ACTIVE_RE = re.compile(r'^(\s*hyprland_active_border\s*=\s*).*$', re.M)
+COLORS_INACTIVE_RE = re.compile(r'^(\s*hyprland_inactive_border\s*=\s*).*$', re.M)
+
+# Window borders: primary "levemente desbotada" (saturation x0.65, a bit
+# darker); inactive: dim and nearly gray.
+WINDOW_SAT, WINDOW_LIGHTNESS = 0.65, 0.68
+WINDOW_INACTIVE_SAT, WINDOW_INACTIVE_LIGHTNESS = 0.25, 0.38
+
+# The few places that get the secondary color instead of the primary:
+# file -> regexes whose group 1 is kept and whose "#rrggbb" gets replaced.
+SECONDARY_SPOTS = {
+    "shell.toml": [  # bar attention modules + menu/launcher hover & focus
+        r'^(active\s*=\s*")#[0-9a-fA-F]{6}',
+        r'^((?:hover-cursor|focus)-(?:color|border)\s*=\s*")#[0-9a-fA-F]{6}',
+    ],
+    "starship.toml": [r'^(success_symbol\s*=\s*"\[❯\]\(bold )#[0-9a-fA-F]{6}'],
+    "btop.theme": [r'^(theme\[(?:title|hi_fg)\]=")#[0-9a-fA-F]{6}'],
+}
+SHELL_BORDER_RE = re.compile(
+    r'^(active-border(?:-foreground)?\s*=\s*")#[0-9a-fA-F]{6}', re.M)
 
 # Papirus folder colors (folder-<name>.svg) and their approximate hex.
 PAPIRUS_COLORS = {
@@ -247,6 +273,14 @@ def build_palette():
             "icons": nearest_papirus(primary), "source": f"{kind}:{name}"}
 
 
+def add_window_colors(pal):
+    h, _, s = hex_to_hls(pal["primary"])
+    pal["window"] = hls_to_hex(h, WINDOW_LIGHTNESS, s * WINDOW_SAT)
+    pal["window_inactive"] = hls_to_hex(h, WINDOW_INACTIVE_LIGHTNESS,
+                                        s * WINDOW_INACTIVE_SAT)
+    return pal
+
+
 def nearest_papirus(hex_color):
     h, l, s = hex_to_hls(hex_color)
     best, best_d = "orange", 9.0
@@ -303,12 +337,17 @@ def substitute(text, pal, nmap):
 
 def render_file(name, text, pal, nmap):
     text = substitute(text, pal, nmap)
-    p, t = pal["primary"], pal["tertiary"]
+    p, w, wi = pal["primary"], pal["window"], pal["window_inactive"]
+    for pat in SECONDARY_SPOTS.get(name, []):
+        text = re.sub(pat, rf'\g<1>#{pal["secondary"]}', text, flags=re.M)
     if name == "hyprland.lua":
-        text = HYPR_ACTIVE_RE.sub(
-            rf'\1{{ colors = {{ "rgb({p})", "rgb({t})" }}, angle = 45 }}', text, count=1)
+        text = HYPR_ACTIVE_RE.sub(rf'\1"rgb({w})"', text, count=1)
+        text = HYPR_INACTIVE_RE.sub(rf'\1"rgb({wi})"', text, count=1)
     elif name == "colors.toml":
-        text = COLORS_ACTIVE_RE.sub(rf'\1"rgb({p}) rgb({t}) 45deg"', text, count=1)
+        text = COLORS_ACTIVE_RE.sub(rf'\1"#{w}"', text, count=1)
+        text = COLORS_INACTIVE_RE.sub(rf'\1"#{wi}"', text, count=1)
+    elif name == "shell.toml":
+        text = SHELL_BORDER_RE.sub(rf'\g<1>#{w}', text)
     elif name == "icons.theme":
         text = ICON_PREFIX + pal["icons"] + "\n"
     elif name == "keyboard.rgb":
@@ -398,8 +437,9 @@ def main():
     lock = open(f"{STATE_DIR}/render.lock", "w")
     fcntl.flock(lock, fcntl.LOCK_EX)
 
-    pal = build_palette()
-    sig = " ".join(f"{k}={pal[k]}" for k in ("primary", "secondary", "tertiary", "icons"))
+    pal = add_window_colors(build_palette())
+    sig = " ".join(f"{k}={pal[k]}" for k in
+                   ("primary", "secondary", "tertiary", "window", "window_inactive", "icons"))
     print(f"{sig} ({pal['source']})")
     if dry:
         return
