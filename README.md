@@ -19,7 +19,8 @@ O OpenRGB resolve a parte do **controle unificado**: um programa só fala com to
 1. **Mantém todo o RGB da máquina sob controle do OpenRGB**, permanentemente — inclusive após reboot.
 2. **Extrai a cor dominante do wallpaper atual** (ou a cor de destaque do tema) e aplica em todos os dispositivos.
 3. **Reage sozinho** a troca de wallpaper, troca de tema e boot.
-4. **Corrige a cor para LED**: o hex de um tema é pensado para monitor (sRGB); mandado cru para o LED, sai "quase certo, mas não". O script lineariza, faz balanço de branco e normaliza o brilho.
+4. **Segue a Steam (opcional)**: com a Steam aberta, os LEDs assumem a cor da capa do jogo selecionado na biblioteca — e a mantêm enquanto o jogo roda.
+5. **Corrige a cor para LED**: o hex de um tema é pensado para monitor (sRGB); mandado cru para o LED, sai "quase certo, mas não". O script lineariza, faz balanço de branco e normaliza o brilho.
 
 ---
 
@@ -85,6 +86,7 @@ O OpenRGB roda o tempo todo em modo `--server` (porta 6742) e é o **único proc
 - **Wallpaper sem cor** → cai para a cor do tema (`keyboard.rgb` / `accent` do Omarchy).
 - **Override manual** por nome de arquivo em `wallpaper-overrides.conf`.
 - Resultado em cache por arquivo (caminho + tamanho + mtime): wallpapers 5K levam ~0,5 s para decodificar.
+- **Capa do jogo na Steam** (opcional): `scripts/omarchy-openrgb-steam-watch` grava em `$XDG_RUNTIME_DIR/omarchy-openrgb/source-image` a capa a usar no lugar do wallpaper, e o orquestrador passa essa imagem pela mesma regra acima. Veja [Cor da capa na Steam](#cor-da-capa-na-steam-opcional).
 
 ### 3. Correção de cor para LED
 Hex de tema é sRGB (com gama de monitor); LED é PWM linear. Enviado cru, os canais fracos acendem demais e o tom desvia. A correção:
@@ -118,6 +120,8 @@ scripts/
 ├── omarchy-openrgb-apply.py                aplica via protocolo SDK (rápido)
 ├── omarchy-openrgb-wallpaper-watch         observa troca de wallpaper (inotify)
 ├── omarchy-openrgb-wallpaper-watch.service unit systemd --user do watcher
+├── omarchy-openrgb-steam-watch             cor da capa do jogo selecionado na Steam
+├── omarchy-openrgb-steam-watch.service     unit systemd --user dele
 ├── led.conf                                ajustes de correção de cor e fonte da cor
 └── wallpaper-overrides.conf                cor fixa por wallpaper
 wpanfilli-theme/                            tema do Omarchy que também segue o wallpaper
@@ -220,12 +224,36 @@ omarchy-openrgb-theme-sync && tail ~/.local/state/omarchy-openrgb-theme-sync.log
 ```
 Para calibrar o balanço de branco, aplique um tema/wallpaper cinza e ajuste `OPENRGB_LED_WHITE_BALANCE` em `led.conf`: branco esverdeado → baixe o byte do meio (G); azulado → baixe o último (B); rosado → baixe o primeiro (R).
 
+### Cor da capa na Steam (opcional)
+
+Com a Steam aberta, os LEDs mudam para a cor da capa do jogo clicado na biblioteca:
+
+| Situação | Cor |
+|---|---|
+| Jogo rodando | capa do jogo — mesmo fora da biblioteca ou com a Steam na bandeja |
+| Página de um jogo na biblioteca | capa desse jogo |
+| Loja, Comunidade, início da biblioteca, janela fechada para a bandeja, Steam fechada | wallpaper |
+
+**Como funciona:** a interface da Steam é uma página CEF (Chromium). Com o arquivo `~/.local/share/Steam/.cef-enable-remote-debugging`, ela expõe o DevTools em `127.0.0.1:8080`. O watcher consulta essa porta a cada segundo e lê a rota da janela principal (`/library/app/<appid>`) e os jogos em execução. A capa vem do cache local da Steam (`appcache/librarycache/<appid>/…/library_hero.jpg`), sem download. Uma seleção só é aplicada depois de 0,6 s parada, para não piscar ao navegar a lista com as setas. A janela fechada no X continua viva no CEF com a última rota, por isso "está na tela?" é perguntado ao Hyprland (`hyprctl clients`).
+
+```bash
+~/.local/share/omarchy-openrgb/venv/bin/pip install websocket-client
+touch ~/.local/share/Steam/.cef-enable-remote-debugging          # e reinicie a Steam
+install -Dm755 scripts/omarchy-openrgb-steam-watch -t ~/.local/bin/
+install -Dm644 scripts/omarchy-openrgb-steam-watch.service -t ~/.config/systemd/user/
+systemctl --user enable --now omarchy-openrgb-steam-watch.service
+journalctl --user -u omarchy-openrgb-steam-watch -f                 # acompanha as trocas
+```
+
+Para desligar: `systemctl --user disable --now omarchy-openrgb-steam-watch`, apague o `.cef-enable-remote-debugging` e reinicie a Steam (fecha a porta 8080).
+
 ---
 
 ## Limitações conhecidas
 
 - Teclado AULA F75: só **cor sólida**. RGB por tecla depende de um mapa de LEDs que, na MR atual, só existe para o F99 (issue upstream [#4232](https://gitlab.com/CalcProgrammer1/OpenRGB/-/issues/4232)).
 - O mapa de dispositivos está no código (Python + bash). Externalizar para um arquivo de config com um comando `calibrate` é o próximo passo — ver o roadmap abaixo.
+- Cor da Steam: a porta de depuração da Steam (8080) só aceita conexões locais, mas qualquer programa do seu usuário consegue controlar a interface da Steam por ela enquanto o arquivo existir. A rota é lida de objetos internos do cliente (`MainWindowBrowserManager`, `SteamUIStore`), que uma atualização da Steam pode mudar; a detecção da bandeja depende do Hyprland.
 - Testado apenas em uma máquina (Arch + Omarchy/Hyprland).
 
 ## Roadmap

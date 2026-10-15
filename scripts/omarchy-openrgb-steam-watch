@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+# Paints the LEDs with the dominant color of the Steam game selected in the
+# library, and back to the wallpaper color when there is none.
+# Runs as the systemd user service omarchy-openrgb-steam-watch.service, with
+# the OpenRGB venv's python (needs websocket-client installed there).
+#
+# Steam's client UI is a CEF (Chromium) page. With the file
+# ~/.local/share/Steam/.cef-enable-remote-debugging present (Steam restarted
+# after creating it), it exposes Chrome DevTools on 127.0.0.1:8080; this polls
+# the "SharedJSContext" page there for the main window's route
+# (/library/app/<appid>) and the running games. Delete that file to turn the
+# debug port (and this feature) off.
+#
+# Which image wins, in order:
+#   1. a game is running              -> its cover (kept even outside the library)
+#   2. main window on /library/app/N  -> cover of N
+#   3. otherwise (Store, Community, library home, main window closed to the
+#      tray, Steam not running)       -> none: back to the wallpaper color
+# "Window closed to the tray" comes from Hyprland, not CEF: the hidden window's
+# page stays alive with its last route.
+# The cover is Steam's own cache (appcache/librarycache/<appid>/.../
+# library_hero.jpg, the big banner on the game's page); games without a cached
+# hero fall back to capsule/header art, then to the wallpaper.
+#
+# The choice is written to $XDG_RUNTIME_DIR/omarchy-openrgb/source-image,
+# which omarchy-openrgb-theme-sync reads instead of the wallpaper, so a
+# wallpaper change while a game is selected keeps the game's color.
+import glob
+import json
+import os
+import subprocess
+import time
+import urllib.request
+
+import websocket
+
+DEVTOOLS = "http://127.0.0.1:8080/json"
+LIBRARY_CACHE = os.path.expanduser("~/.local/share/Steam/appcache/librarycache")
+SYNC = os.path.expanduser("~/.local/bin/omarchy-openrgb-theme-sync")
+STATE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "omarchy-openrgb", "source-image")
+POLL = 1.0
+# A selection must hold this long before it is applied, so arrowing through
+# the library list doesn't fire a sync per game it passes.
+SETTLE = 0.6
+QUERY = """(() => {
+  const route = MainWindowBrowserManager?.m_lastLocation?.pathname ?? "";
+  let running = [];
+  try { running = SteamUIStore.RunningApps.map(a => a.appid); } catch (e) {}
+  return { route, running };
+})()"""
+
+
+def steam_state():
+    """(route, running appids), or None when Steam's UI isn't reachable."""
+    try:
+        with urllib.request.urlopen(DEVTOOLS, timeout=1) as r:
+            targets = json.load(r)
+    except (OSError, ValueError):
+        return None
+    ctx = next((t for t in targets if t.get("title") == "SharedJSContext"), None)
+    if not ctx:
+        return None
+    try:
+        ws = websocket.create_connection(ctx["webSocketDebuggerUrl"], timeout=2, suppress_origin=True)
+        try:
+            ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate",
+                                "params": {"expression": QUERY, "returnByValue": True}}))
+            while True:
+                msg = json.loads(ws.recv())
+                if msg.get("id") == 1:
+                    break
+        finally:
+            ws.close()
+    except (OSError, ValueError, websocket.WebSocketException):
+        return None
+    value = msg.get("result", {}).get("result", {}).get("value") or {}
+    return value.get("route", ""), value.get("running", [])
+
+
+def main_window_open():
+    """Whether Steam's main window is on screen. Closing it with X only hides
+    it to the tray: its CEF page stays loaded (and keeps the last route), so
+    this asks Hyprland instead, where a tray-hidden window has no client."""
+    try:
+        out = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, timeout=2).stdout
+        clients = json.loads(out)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return True  # can't tell: don't drop a selection over it
+    return any(c.get("class", "").lower() == "steam" and c.get("title") == "Steam" for c in clients)
+
+
+def cover(appid):
+    for name in ("library_hero.jpg", "library_capsule.jpg", "library_header.jpg", "header.jpg"):
+        found = glob.glob(os.path.join(LIBRARY_CACHE, str(appid), "**", name), recursive=True)
+        if found:
+            return found[0]
+    return ""
+
+
+def wanted_image(state):
+    if state is None:
+        return ""
+    route, running = state
+    if running:
+        return cover(running[0])
+    if not main_window_open():
+        return ""
+    parts = route.strip("/").split("/")
+    if len(parts) >= 3 and parts[:2] == ["library", "app"] and parts[2].isdigit():
+        return cover(parts[2])
+    return ""
+
+
+def apply(image):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    if image:
+        with open(STATE + ".tmp", "w") as f:
+            f.write(image)
+        os.replace(STATE + ".tmp", STATE)
+    else:
+        try:
+            os.remove(STATE)
+        except FileNotFoundError:
+            pass
+    print(f"{time.strftime('%H:%M:%S')} -> {image or 'wallpaper'}", flush=True)
+    subprocess.run([SYNC], check=False)
+
+
+def main():
+    # Start from the wallpaper: a stale override from a previous run must not
+    # survive into a session where Steam isn't even open.
+    applied = None if os.path.exists(STATE) else ""
+    candidate, since = None, 0.0
+    while True:
+        image = wanted_image(steam_state())
+        now = time.monotonic()
+        if image != candidate:
+            candidate, since = image, now
+        if candidate != applied and now - since >= SETTLE:
+            apply(candidate)
+            applied = candidate
+        time.sleep(POLL if candidate == applied else 0.2)
+
+
+if __name__ == "__main__":
+    main()

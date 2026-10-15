@@ -1,0 +1,12 @@
+[Unit]
+Description=Sync OpenRGB colors to the selected Steam game's cover
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/share/omarchy-openrgb/venv/bin/python %h/.local/bin/omarchy-openrgb-steam-watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

@@ -81,7 +81,17 @@ SDK_APPLY="$HOME/.local/bin/omarchy-openrgb-apply.py"
     fi
 
     # timeout: a hung picker must never keep holding the sync lock.
-    eval "$(timeout 20 python3 "$PICKER" "$COLORS_FILE")"
+    # $CACHE_DIR/source-image (written by omarchy-openrgb-steam-watch) holds
+    # another image to take the color from instead of the wallpaper/theme:
+    # the selected Steam game's cover. Read from a file, not the environment,
+    # so a wallpaper change while a game is selected keeps the game's color.
+    source_image=$(cat "$CACHE_DIR/source-image" 2>/dev/null || true)
+    if [[ -n $source_image && -f $source_image ]]; then
+        echo "source image override: $source_image"
+        eval "$(timeout 20 python3 "$PICKER" --image "$source_image")"
+    else
+        eval "$(timeout 20 python3 "$PICKER" "$COLORS_FILE")"
+    fi
 
     if [[ -z "${PRIMARY:-}" ]]; then
         echo "Failed to determine PRIMARY color, skipping"
